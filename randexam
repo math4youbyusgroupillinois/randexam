@@ -6,6 +6,8 @@ RELEASE_DATE = "2014-03-04"
 import re, random, sys, itertools, string, csv, os, difflib, subprocess, collections, time
 import smtplib, email.mime.text, email.mime.multipart, email.mime.application, getpass
 import numpy as np
+
+#scipy only required to curve scores. Other functions can be safely run without this import
 import scipy.interpolate
 
 ######################################################################
