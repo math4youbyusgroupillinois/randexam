@@ -2205,6 +2205,14 @@ def send_email(input_directory, rawscan_directory, mail_server, mail_domain, sub
     index_in_block = 0
 
     for si in range(N_s):
+        input_basename = student_netid + ".pdf"
+        input_filename = os.path.join(input_directory, input_basename)
+        done_filename = os.path.join(input_directory, "sent-"+input_basename)
+        
+        if os.path.isfile(done_filename):
+          continue;
+
+
         if index_in_block >= block_size:
             index_in_block = 0
             log_and_print("Quitting current connection")
@@ -2226,8 +2234,6 @@ def send_email(input_directory, rawscan_directory, mail_server, mail_domain, sub
 
         student_netid = u[si,3].lower()
         to_address = student_netid + "@" + mail_domain
-        input_basename = student_netid + ".pdf"
-        input_filename = os.path.join(input_directory, input_basename)
         if rawscan_directory != "":
             rawscan_filename = os.path.join(rawscan_directory, input_basename)
 
@@ -2265,6 +2271,7 @@ def send_email(input_directory, rawscan_directory, mail_server, mail_domain, sub
 
         composed = outer.as_string()
         smtp.sendmail(from_address, to_address, composed)
+        os.rename(input_filename,done_filename)
 
     log("Successfully completed sending email")
 
