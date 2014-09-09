@@ -8,7 +8,7 @@ import smtplib, email.mime.text, email.mime.multipart, email.mime.application, g
 import numpy as np
 
 #scipy only required to curve scores. Other functions can be safely run without this import
-import scipy.interpolate
+#import scipy.interpolate
 
 ######################################################################
 ######################################################################
@@ -18,6 +18,8 @@ TEST_NAME = "Exam Title, Spring 2071"
 FILENAME_PREFIX = "" # set to "midterm1_" or "final_" or similar
 FEEDBACK_DIRECTORY = "feedback"
 RAWSCAN_DIRECTORY = "" # optional directory containing per-student files <netid>.pdf
+
+MULTIPLE_EXAM_FILES = False
 
 MULTIPLE_ANSWERS_PER_QUESTION = False # can students bubble in more than one answer?
 SCORE_PER_ANSWERS = [0., 1., 1./2., 1./3., 0., 0.] # partial credit values vs. num bubbles
@@ -57,6 +59,7 @@ NETIDS_FILENAME = FILENAME_PREFIX + "netids.txt"
 
 # output filenames
 EXAMS_FILENAME = FILENAME_PREFIX + "exams.tex"
+EXAMS_DIRECTORY = "print"
 SOLUTIONS_FILENAME = FILENAME_PREFIX + "solutions.csv"
 FULL_SOLUTIONS_FILENAME = FILENAME_PREFIX + "full_solutions.tex"
 SPECS_FILENAME = FILENAME_PREFIX + "specs.csv"
@@ -113,7 +116,7 @@ def main():
         (K, Q, V, A) = generate_specs(library, N_e, N_A)
         check_key_distances(K)
         write_specs(SPECS_FILENAME, K, Q, V, A)
-        write_exams(EXAMS_FILENAME, library, K, Q, V, A, MINIMUM_EXAM_PAGES, ONE_PAGE_PER_QUESTION)
+        write_exams(EXAMS_DIRECTORY, EXAMS_FILENAME,MULTIPLE_EXAM_FILES, library, K, Q, V, A, MINIMUM_EXAM_PAGES, ONE_PAGE_PER_QUESTION)
         c = generate_solutions(Q, V, A, C)
         write_solutions(SOLUTIONS_FILENAME, K, c)
         write_full_solutions(FULL_SOLUTIONS_FILENAME, library, K, Q, V, A)
@@ -878,103 +881,164 @@ def check_key_distances(K):
 
 ######################################################################
 ######################################################################
+def write_one_student_exam(out_f,ei,library,flat_questions, K, Q, V, A, one_page_per_q):
+  """write_one_student_exam(out_f,ei,library,flat_questions, K, Q, V, A, one_page_per_q)
+  Writes one student exam to the output stream out_f
+  """
+  (N_e, N_Q, N_A) = A.shape
+  out_f.write(("%" * 70 + "\n") * 4)
+  out_f.write(r"\cleardoublepage" + "\n")
+  out_f.write(r"%% Exam number %d" % (ei + 1) + "\n\n")
+  out_f.write(r"\examnumber=%d" % (ei + 1) + "\n\n")
+      
+  out_f.write(r"\message{Exam %d/%d}" % (ei + 1, N_e) + "\n")
+  out_f.write(r"\setcounter{page}{1}" + "\n\n")
+  out_f.write(library.coverpage + "\n")
+  out_f.write(r"\begin{enumerate}" + "\n")
+  for (i_key_digit, key_digit) in enumerate(K[ei]):
+      key_question = LAST_SCANTRON_QUESTION_NUMBER - len(K[ei]) + i_key_digit + 1
+      out_f.write(r"\item[%d.] %s" % (key_question, key_digit) + "\n")
+  out_f.write(r"\end{enumerate}" + "\n\n")
+  out_f.write(r"\newpage" + "\n\n")
 
-def write_exams(output_filename, library, K, Q, V, A, min_pages, one_page_per_q):
-    """write_exams(output_filename, library, K, Q, V, A, min_pages, one_page_per_q)
+  qi = 0
+  for (i_zone, zone) in enumerate(library.zones):
+      out_f.write("%% Zone %d\n\n" % (i_zone + 1))
+      out_f.write(zone.body + "\n\n")
+      for i_zone_question in range(len(zone.questions)):
+          if one_page_per_q:
+              out_f.write(r"\newpage" + "\n")
+          out_f.write(r"\noindent" + "\n")
+          if not one_page_per_q:
+              out_f.write(r"\begin{minipage}{\textwidth}" + "\n")
+          points = flat_questions[Q[ei,qi]].points
+          out_f.write(r"%d. (%g %s)" % (qi + 1, points,
+                                        "point" if points == 1 else "points")
+                      + "\n")
+          variant = flat_questions[Q[ei,qi]].variants[V[ei,qi]]
+          out_f.write(variant.body + "\n")
+          n_answers = len([ai for ai in range(N_A) if chr2ind(A[ei,qi,ai]) >= 0])
+          if n_answers > 0:
+              #For less whitespace: out_f.write(r"\begin{enumerate}[topsep=4pt,itemsep=1pt,partopsep=1pt,parsep=1pt]" + "\n")
+              out_f.write(r"\begin{enumerate}" + "\n")
+              for ai in range(N_A):
+                  Ai = chr2ind(A[ei,qi,ai])
+                  if Ai >= 0:
+                      out_f.write(r"\item[(%s)]" % ind2chr(ai) + "\n")
+                      out_f.write(variant.answers[Ai].body + "\n")
+              out_f.write(r"\end{enumerate}" + "\n")
+          if not one_page_per_q:
+              out_f.write(r"\vspace*{10em}" + "\n")
+              # For less whitespace: 0.5em
+              out_f.write(r"\end{minipage}" + "\n")
+              out_f.write(r"\filbreak\vfil\penalty-200\vfilneg" + "\n\n")
 
-    Write the generated exams to the exams.tex file, padding each exam
+          qi += 1
+
+######################################################################
+######################################################################
+
+def write_exams(output_directory,base_filename, separate_files,library, K, Q, V, A, min_pages, one_page_per_q):
+    """write_exams(output_directory,base_filename, library, K, Q, V, A, min_pages, one_page_per_q)
+
+    If separate_files is false: Write the generated exams to the single file, padding each exam
     to be at least min_pages long and an even number of pages.
-    """
-    log_and_print("Writing randomized exams to file: %s" % output_filename)
+    
+    If separate_files is true: Write the generate exams to the given directory (one tex file per student id).
+    Each tex file can be a different number of pages.
+    """    
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+        
+    output_filename = os.path.join(output_directory, base_filename )
+    
+    log_and_print("Writing randomized exams : %s" % output_filename)
     (N_e, N_Q, N_A) = A.shape
 
     flat_questions = list(itertools.chain.from_iterable([zone.questions for zone in library.zones]))
-    with open(output_filename, "w") as out_f:
-        out_f.write(library.preamble + "\n")
-        out_f.write("\n")
-        out_f.write(r"\begin{document}" + "\n")
-        out_f.write("\n")
-        out_f.write(r"\newcount\maxrawpages" + "\n")
-        out_f.write(r"\newcount\maxpadpages" + "\n")
-        out_f.write(r"\newcount\minpadpages" + "\n")
-        out_f.write(r"\maxrawpages=0" + "\n")
-        out_f.write(r"\maxpadpages=0" + "\n")
-        out_f.write(r"\minpadpages=1000000" + "\n")
-        out_f.write(r"\newcount\padcount" + "\n")
-        out_f.write("\n")
 
-        for ei in range(N_e):
-            out_f.write(("%" * 70 + "\n") * 4)
-            out_f.write(r"\cleardoublepage" + "\n")
-            out_f.write(r"%% Exam number %d" % (ei + 1) + "\n\n")
-            out_f.write(r"\message{Exam %d/%d}" % (ei + 1, N_e) + "\n")
-            out_f.write(r"\setcounter{page}{1}" + "\n\n")
-            out_f.write(library.coverpage + "\n")
-            out_f.write(r"\begin{enumerate}" + "\n")
-            for (i_key_digit, key_digit) in enumerate(K[ei]):
-                key_question = LAST_SCANTRON_QUESTION_NUMBER - len(K[ei]) + i_key_digit + 1
-                out_f.write(r"\item[%d.] %s" % (key_question, key_digit) + "\n")
-            out_f.write(r"\end{enumerate}" + "\n\n")
-            out_f.write(r"\newpage" + "\n\n")
+    #Todo: This code would be tidier if we assigned the numerous output lines to strings first . 
+    #Then you could see the iteration logic below compressed into 10 lines instead of 100
+    
+    for ei in range(N_e):
+      if separate_files :
+          # exam.tex -> exam_1.tex
+          output_filename_full = ("_"+str(ei+1)+".").join( output_filename.rsplit(".") )
 
-            qi = 0
-            for (i_zone, zone) in enumerate(library.zones):
-                out_f.write("%% Zone %d\n\n" % (i_zone + 1))
-                out_f.write(zone.body + "\n\n")
-                for i_zone_question in range(len(zone.questions)):
-                    if one_page_per_q:
-                        out_f.write(r"\newpage" + "\n")
-                    out_f.write(r"\noindent" + "\n")
-                    if not one_page_per_q:
-                        out_f.write(r"\begin{minipage}{\textwidth}" + "\n")
-                    points = flat_questions[Q[ei,qi]].points
-                    out_f.write(r"%d. (%g %s)" % (qi + 1, points,
-                                                  "point" if points == 1 else "points")
-                                + "\n")
-                    variant = flat_questions[Q[ei,qi]].variants[V[ei,qi]]
-                    out_f.write(variant.body + "\n")
-                    n_answers = len([ai for ai in range(N_A) if chr2ind(A[ei,qi,ai]) >= 0])
-                    if n_answers > 0:
-                        out_f.write(r"\begin{enumerate}" + "\n")
-                        for ai in range(N_A):
-                            Ai = chr2ind(A[ei,qi,ai])
-                            if Ai >= 0:
-                                out_f.write(r"\item[(%s)]" % ind2chr(ai) + "\n")
-                                out_f.write(variant.answers[Ai].body + "\n")
-                        out_f.write(r"\end{enumerate}" + "\n")
-                    if not one_page_per_q:
-                        out_f.write(r"\vspace*{10em}" + "\n")
-                        out_f.write(r"\end{minipage}" + "\n")
-                        out_f.write(r"\filbreak\vfil\penalty-200\vfilneg" + "\n\n")
+      elif ei == 0 :
+          output_filename_full = output_filename
+      
+      if(output_filename_full) :
+          out_f = open( output_filename_full ,"w")
+          output_filename_full = ""
+          
+          out_f.write(library.preamble + "\n\n")
 
-                    qi += 1
+          out_f.write(r"\begin{document}" + "\n")
+          out_f.write("\n")
+          
+          out_f.write(r"\newcount\examnumber" + "\n") # set in write_one_student_exam
+          out_f.write(r"\newcount\questioncountall" + "\n")
+          out_f.write(r"\questioncountall=%d" % len(flat_questions))
+          out_f.write("\n")
+                    
+# Can't declare Tex variables with numbers in , perhaps someone will continue to develop this...
+#          for (i_zone, zone) in enumerate(library.zones):  
+#              out_f.write(r"\newcount\questioncountzone%d" % (i_zone + 1) )
+#              out_f.write("\n")
+#              out_f.write(r"\questioncountzone%d=%d" % ( i_zone + 1 ,len(zone.questions) ))
+#              out_f.write("\n") 
 
-            out_f.write("\n")
-            out_f.write(r"\ifnum\maxrawpages<\thepage \maxrawpages=\thepage\fi" + "\n")
-            out_f.write("\n")
-            out_f.write(r"\ifnum\thepage<%d" % min_pages + "\n")
-            out_f.write(r"\padcount=\thepage" + "\n")
-            out_f.write(r"\loop" + "\n")
-            out_f.write(r"\newpage \ \par \vspace*{\fill}\centerline{This page is intentionally left blank.}\vspace*{\fill}" + "\n")
-            out_f.write(r"\advance \padcount 1" + "\n")
-            out_f.write(r"\ifnum \padcount<%d" % min_pages + "\n")
-            out_f.write(r"\repeat" + "\n")
-            out_f.write(r"\fi" + "\n")
-            out_f.write("\n")
-            out_f.write(r"\ifnum\maxpadpages<\thepage \maxpadpages=\thepage\fi" + "\n")
-            out_f.write("\n")
-            out_f.write(r"\ifnum\minpadpages>\thepage \minpadpages=\thepage\fi" + "\n")
-            out_f.write("\n")
+          out_f.write(r"\newcount\maxrawpages" + "\n")
+          out_f.write(r"\newcount\maxpadpages" + "\n")
+          out_f.write(r"\newcount\minpadpages" + "\n")          
+          out_f.write(r"\maxrawpages=0" + "\n")
+          out_f.write(r"\maxpadpages=0" + "\n")
+          out_f.write(r"\minpadpages=1000000" + "\n")
+          out_f.write(r"\newcount\padcount" + "\n")
 
-        out_f.write("\n")
-        out_f.write(r"\cleardoublepage" + "\n")
-        out_f.write(r"\message{Max raw (unpadded) length: \the\maxrawpages.}" + "\n")
-        out_f.write(r"\message{Max padded length: \the\maxpadpages.}" + "\n")
-        out_f.write(r"\message{Min padded length: \the\minpadpages.}" + "\n")
-        out_f.write(r"\ifnum\maxpadpages>\minpadpages \message{WARNING: exams are not all the same length.}" + "\n")
-        out_f.write(r"\else\message{Exams are all the same length.}\fi" + "\n")
-        out_f.write("\n")
+          
+          
+        
+      write_one_student_exam(out_f,ei,library,flat_questions, K, Q, V, A, one_page_per_q)
+                
+
+      out_f.write("\n")
+      if(separate_files) :
         out_f.write(r"\end{document}" + "\n")
+        out_f.close()
+        out_f = None
+      else:  
+        # Ensure all exams are even in length and have padding pages if necessary
+        out_f.write(r"\ifnum\maxrawpages<\thepage \maxrawpages=\thepage\fi" + "\n")
+        out_f.write("\n")
+        out_f.write(r"\ifnum\thepage<%d" % min_pages + "\n")
+        out_f.write(r"\padcount=\thepage" + "\n")
+        out_f.write(r"\loop" + "\n")
+        out_f.write(r"\newpage \ \par \vspace*{\fill}\centerline{This page is intentionally left blank.}\vspace*{\fill}" + "\n")
+        out_f.write(r"\advance \padcount 1" + "\n")
+        out_f.write(r"\ifnum \padcount<%d" % min_pages + "\n")
+        out_f.write(r"\repeat" + "\n")
+        out_f.write(r"\fi" + "\n")
+        out_f.write("\n")
+        out_f.write(r"\ifnum\maxpadpages<\thepage \maxpadpages=\thepage\fi" + "\n")
+        out_f.write("\n")
+        out_f.write(r"\ifnum\minpadpages>\thepage \minpadpages=\thepage\fi" + "\n")
+        out_f.write("\n")
+
+    if(not(separate_files)) :
+      out_f.write("\n")
+      out_f.write(r"\cleardoublepage" + "\n")
+      out_f.write(r"\message{Max raw (unpadded) length: \the\maxrawpages.}" + "\n")
+      out_f.write(r"\message{Max padded length: \the\maxpadpages.}" + "\n")
+      out_f.write(r"\message{Min padded length: \the\minpadpages.}" + "\n")
+      out_f.write(r"\ifnum\maxpadpages>\minpadpages \message{WARNING: exams are not all the same length.}" + "\n")
+      out_f.write(r"\else\message{Exams are all the same length.}\fi" + "\n")
+      out_f.write("\n")
+      out_f.write(r"\end{document}" + "\n")
+      out_f.close()
+      out_f = None
+      
     log("Successfully completed writing randomized exams")
 
 ######################################################################
